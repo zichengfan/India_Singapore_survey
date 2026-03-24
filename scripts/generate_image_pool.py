@@ -62,7 +62,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_url(owner: str, repo: str, commit: str, rel_path: str) -> str:
-    return f"https://raw.githubusercontent.com/{owner}/{repo}/{commit}/{rel_path}"
+    return f"raw.githubusercontent.com/{owner}/{repo}/{commit}/{rel_path}"
 
 
 def collect_images(images_root: Path) -> dict[str, dict[str, list[Path]]]:
