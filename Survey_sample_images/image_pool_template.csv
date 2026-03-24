@@ -1,0 +1,6 @@
+image_id,image_url,scene_type,country,image_set,notes
+IND_COM_001,https://your-server.org/images/IND_COM_001.jpg,Commercial,India,A,
+IND_COM_002,https://your-server.org/images/IND_COM_002.jpg,Commercial,India,A,
+IND_RES_001,https://your-server.org/images/IND_RES_001.jpg,Residential,India,A,
+SG_COM_001,https://your-server.org/images/SG_COM_001.jpg,Commercial,Singapore,B,
+SG_RES_001,https://your-server.org/images/SG_RES_001.jpg,Residential,Singapore,B,
