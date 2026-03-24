@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import subprocess
 from pathlib import Path
 
 
@@ -32,8 +33,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--commit",
-        required=True,
-        help="Git commit hash used to build permanent raw.githubusercontent.com links.",
+        default=None,
+        help="Git commit hash used to build permanent raw.githubusercontent.com links. Defaults to the current HEAD commit.",
     )
     parser.add_argument(
         "--owner",
@@ -101,9 +102,19 @@ def make_image_id(country: str, scene: str, path: Path) -> str:
     return f"{COUNTRY_CODE[country]}_{SCENE_CODE[scene]}_{suffix}"
 
 
+def resolve_commit(repo_root: Path, commit: str | None) -> str:
+    if commit:
+        return commit
+    return subprocess.check_output(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+
+
 def main() -> None:
     args = parse_args()
     repo_root = args.repo_root.resolve()
+    commit = resolve_commit(repo_root, args.commit)
     images_root = repo_root / "Survey_sample_images"
     output_path = args.output or images_root / "image_pool.csv"
     question_output_path = args.question_output or images_root / "question_sets.csv"
@@ -121,7 +132,7 @@ def main() -> None:
                 path = grouped[country][scene][set_index]
                 rel_path = path.relative_to(repo_root).as_posix()
                 image_id = make_image_id(country, scene, path)
-                image_url = build_url(args.owner, args.repo, args.commit, rel_path)
+                image_url = build_url(args.owner, args.repo, commit, rel_path)
                 rows.append(
                     {
                         "image_id": image_id,
