@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 SCENE_ORDER = ["Campus", "Commercial", "Highway", "Industrial", "Residential"]
-COUNTRY_ORDER = ["Singapore", "India"]
+COUNTRY_ORDER = ["India", "Singapore"]
 COUNTRY_CODE = {"Singapore": "SG", "India": "IND"}
 SCENE_CODE = {
     "Campus": "CAM",
@@ -18,7 +18,8 @@ SCENE_CODE = {
     "Industrial": "IND",
     "Residential": "RES",
 }
-SET_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+SET_LABELS_BY_COUNTRY = {"India": "ABCDE", "Singapore": "FGHIJ"}
+IMAGES_PER_SCENE = 5
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,9 +33,14 @@ def parse_args() -> argparse.Namespace:
         help="Path to the repository root.",
     )
     parser.add_argument(
+        "--git-ref",
         "--commit",
+        dest="git_ref",
         default=None,
-        help="Git commit hash used to build permanent raw.githubusercontent.com links. Defaults to the current HEAD commit.",
+        help=(
+            "Git ref used to build raw.githubusercontent.com links. "
+            "Defaults to the current branch name, or HEAD commit if detached."
+        ),
     )
     parser.add_argument(
         "--owner",
@@ -50,61 +56,79 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=None,
-        help="Output CSV path. Defaults to Survey_sample_images/image_pool.csv",
+        help="Output CSV path. Defaults to Survey_sample_images/image_pool.csv.",
     )
     parser.add_argument(
         "--question-output",
         type=Path,
         default=None,
-        help="Output CSV path for one-row-per-set survey imports. Defaults to Survey_sample_images/question_sets.csv",
+        help=(
+            "Output CSV path for one-row-per-set survey imports. "
+            "Defaults to Survey_sample_images/question_sets.csv."
+        ),
+    )
+    parser.add_argument(
+        "--images-root",
+        type=Path,
+        default=None,
+        help="Image source directory. Defaults to Survey_Images.",
     )
     return parser.parse_args()
 
 
-def build_url(owner: str, repo: str, commit: str, rel_path: str) -> str:
-    return f"raw.githubusercontent.com/{owner}/{repo}/{commit}/{rel_path}"
+def build_url(owner: str, repo: str, git_ref: str, rel_path: str) -> str:
+    return f"raw.githubusercontent.com/{owner}/{repo}/{git_ref}/{rel_path}"
 
 
 def collect_images(images_root: Path) -> dict[str, dict[str, list[Path]]]:
     grouped: dict[str, dict[str, list[Path]]] = {country: {} for country in COUNTRY_ORDER}
     for country in COUNTRY_ORDER:
         country_dir = images_root / country
-        for path in sorted(country_dir.iterdir()):
-            if not path.is_file() or path.name == ".DS_Store":
-                continue
-            scene = path.stem.split("_", 1)[0]
-            grouped[country].setdefault(scene, []).append(path)
+        if not country_dir.is_dir():
+            raise ValueError(f"Missing country directory: {country_dir}")
+        for scene in SCENE_ORDER:
+            scene_dir = country_dir / scene
+            if not scene_dir.is_dir():
+                raise ValueError(f"Missing scene directory: {scene_dir}")
+            images = [
+                path
+                for path in sorted(scene_dir.iterdir())
+                if path.is_file() and path.name != ".DS_Store"
+            ]
+            grouped[country][scene] = images
     return grouped
 
 
-def validate_groups(grouped: dict[str, dict[str, list[Path]]]) -> int:
-    expected_count = None
+def validate_groups(grouped: dict[str, dict[str, list[Path]]]) -> None:
     for country in COUNTRY_ORDER:
         for scene in SCENE_ORDER:
             images = grouped.get(country, {}).get(scene, [])
-            if not images:
-                raise ValueError(f"Missing images for {country}/{scene}")
-            if expected_count is None:
-                expected_count = len(images)
-            elif len(images) != expected_count:
+            if len(images) < IMAGES_PER_SCENE:
                 raise ValueError(
-                    f"Inconsistent image counts. {country}/{scene} has {len(images)} "
-                    f"images, expected {expected_count}."
+                    f"Not enough images for {country}/{scene}. "
+                    f"Found {len(images)}, need at least {IMAGES_PER_SCENE}."
                 )
-    assert expected_count is not None
-    if expected_count > len(SET_LABELS):
-        raise ValueError("Too many sets for built-in labels.")
-    return expected_count
+        if len(SET_LABELS_BY_COUNTRY[country]) < IMAGES_PER_SCENE:
+            raise ValueError(f"Not enough set labels configured for {country}.")
 
 
 def make_image_id(country: str, scene: str, path: Path) -> str:
-    suffix = path.stem.split("_", 1)[1]
+    stem_parts = path.stem.split("_", 1)
+    suffix = stem_parts[1] if len(stem_parts) > 1 else stem_parts[0]
     return f"{COUNTRY_CODE[country]}_{SCENE_CODE[scene]}_{suffix}"
 
 
-def resolve_commit(repo_root: Path, commit: str | None) -> str:
-    if commit:
-        return commit
+def resolve_git_ref(repo_root: Path, git_ref: str | None) -> str:
+    if git_ref:
+        return git_ref
+
+    branch = subprocess.check_output(
+        ["git", "-C", str(repo_root), "branch", "--show-current"],
+        text=True,
+    ).strip()
+    if branch:
+        return branch
+
     return subprocess.check_output(
         ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
         text=True,
@@ -114,25 +138,34 @@ def resolve_commit(repo_root: Path, commit: str | None) -> str:
 def main() -> None:
     args = parse_args()
     repo_root = args.repo_root.resolve()
-    commit = resolve_commit(repo_root, args.commit)
-    images_root = repo_root / "Survey_sample_images"
-    output_path = args.output or images_root / "image_pool.csv"
-    question_output_path = args.question_output or images_root / "question_sets.csv"
+    git_ref = resolve_git_ref(repo_root, args.git_ref)
+    images_root = (args.images_root or (repo_root / "Survey_Images")).resolve()
+    sample_root = repo_root / "Survey_sample_images"
+    output_path = args.output or sample_root / "image_pool.csv"
+    question_output_path = args.question_output or sample_root / "question_sets.csv"
 
     grouped = collect_images(images_root)
-    set_count = validate_groups(grouped)
+    validate_groups(grouped)
+
+    question_fieldnames = ["image_set"]
+    for country in COUNTRY_ORDER:
+        country_prefix = "sg" if country == "Singapore" else "ind"
+        for scene in SCENE_ORDER:
+            scene_prefix = scene.lower()
+            question_fieldnames.append(f"{country_prefix}_{scene_prefix}_id")
+            question_fieldnames.append(f"{country_prefix}_{scene_prefix}_url")
 
     rows: list[dict[str, str]] = []
     question_rows: list[dict[str, str]] = []
-    for set_index in range(set_count):
-        set_label = SET_LABELS[set_index]
-        question_row: dict[str, str] = {"image_set": set_label}
-        for country in COUNTRY_ORDER:
+    for country in COUNTRY_ORDER:
+        for set_index, set_label in enumerate(SET_LABELS_BY_COUNTRY[country][:IMAGES_PER_SCENE]):
+            question_row: dict[str, str] = {fieldname: "" for fieldname in question_fieldnames}
+            question_row["image_set"] = set_label
             for scene in SCENE_ORDER:
                 path = grouped[country][scene][set_index]
                 rel_path = path.relative_to(repo_root).as_posix()
                 image_id = make_image_id(country, scene, path)
-                image_url = build_url(args.owner, args.repo, commit, rel_path)
+                image_url = build_url(args.owner, args.repo, git_ref, rel_path)
                 rows.append(
                     {
                         "image_id": image_id,
@@ -147,7 +180,7 @@ def main() -> None:
                 scene_prefix = scene.lower()
                 question_row[f"{country_prefix}_{scene_prefix}_id"] = image_id
                 question_row[f"{country_prefix}_{scene_prefix}_url"] = image_url
-        question_rows.append(question_row)
+            question_rows.append(question_row)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8") as handle:
@@ -157,14 +190,6 @@ def main() -> None:
         )
         writer.writeheader()
         writer.writerows(rows)
-
-    question_fieldnames = ["image_set"]
-    for country in COUNTRY_ORDER:
-        country_prefix = "sg" if country == "Singapore" else "ind"
-        for scene in SCENE_ORDER:
-            scene_prefix = scene.lower()
-            question_fieldnames.append(f"{country_prefix}_{scene_prefix}_id")
-            question_fieldnames.append(f"{country_prefix}_{scene_prefix}_url")
 
     with question_output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=question_fieldnames)
